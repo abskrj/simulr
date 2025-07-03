@@ -1,0 +1,47 @@
+# Development overrides for docker-compose.yml
+# This file is automatically loaded by docker-compose for local development
+
+version: '3.8'
+
+services:
+  backend:
+    # Mount source code for hot reloading in development
+    volumes:
+      - ./backend:/app
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+    # Override command for development with auto-reload
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload" ]
+
+  frontend:
+    # For development, you might want to run Vite dev server instead
+    # Comment out this service and run `npm run dev` locally for hot reloading
+    ports:
+      - "3000:80" # Different port for dev
+
+  # Development database viewer (optional)
+  adminer:
+    image: adminer
+    container_name: physics-sim-adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - physics-sim-network
+    profiles:
+      - dev-tools
+
+  # Redis GUI (optional)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: physics-sim-redis-gui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+    networks:
+      - physics-sim-network
+    profiles:
+      - dev-tools
