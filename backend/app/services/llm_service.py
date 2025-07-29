@@ -1,63 +1,94 @@
 import json
 import uuid
+import google.generativeai as genai
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from openai import AsyncOpenAI
 from anthropic import AsyncAnthropic
 from ..config import settings
-from ..models.request_models import SimulationRequest
+from ..models.request_models import SimulationRequest, LLMProvider
 
 class LLMService:
     def __init__(self):
-        self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
-        self.anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key) if settings.anthropic_api_key else None
-    
+        self.openai_client: Optional[AsyncOpenAI] = None
+        if settings.openai_api_key:
+            self.openai_client = AsyncOpenAI(api_key=settings.openai_api_key)
+
+        self.anthropic_client: Optional[AsyncAnthropic] = None
+        if settings.anthropic_api_key:
+            self.anthropic_client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+
+        self.gemini_client: Optional[genai.GenerativeModel] = None
+        if settings.gemini_api_key:
+            genai.configure(api_key=settings.gemini_api_key)
+            self.gemini_client = genai.GenerativeModel('gemini-pro')
+
     async def generate_simulation(self, request: SimulationRequest) -> Dict[str, Any]:
         """Generate Three.js simulation JSON from natural language"""
-        
+
         system_prompt = self._get_system_prompt(request.complexity)
         user_prompt = self._build_user_prompt(request)
         
         try:
-            if self.openai_client:
-                # Use OpenAI GPT-4
-                response = await self.openai_client.chat.completions.create(
-                    model="gpt-4-turbo-preview",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=4000
-                )
-                
-                # Parse JSON response
-                json_content = response.choices[0].message.content
-                simulation_data = json.loads(json_content)
-                
-                # Add metadata
-                simulation_data.update({
-                    "simulation_id": str(uuid.uuid4()),
-                    "description": request.prompt,
-                    "complexity": request.complexity.value,
-                    "metadata": {
-                        "generated_at": datetime.now(),
-                        "processing_time": 2.5,  # Mock for now
-                        "llm_model": "gpt-4-turbo-preview",
-                        "confidence": 0.85
-                    }
-                })
-                
-                return simulation_data
+            if request.provider == LLMProvider.OPENAI and self.openai_client:
+                return await self._generate_with_openai(system_prompt, user_prompt, request)
+            elif request.provider == LLMProvider.ANTHROPIC and self.anthropic_client:
+                # Placeholder for Anthropic implementation
+                raise NotImplementedError("Anthropic provider is not yet implemented.")
+            elif request.provider == LLMProvider.GEMINI and self.gemini_client:
+                return await self._generate_with_gemini(system_prompt, user_prompt, request)
             else:
-                # Fallback to template if no API key
+                # Fallback if the specified provider is not available or configured
                 return self._get_fallback_simulation(request)
                 
         except Exception as e:
-            print(f"LLM generation error: {e}")
+            print(f"LLM generation error with {request.provider}: {e}")
             # Fallback to template
             return self._get_fallback_simulation(request)
-    
+
+    async def _generate_with_openai(self, system_prompt: str, user_prompt: str, request: SimulationRequest) -> Dict[str, Any]:
+        """Generate simulation using OpenAI"""
+        response = await self.openai_client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=4000
+        )
+        json_content = response.choices[0].message.content
+        simulation_data = json.loads(json_content)
+        return self._add_metadata(simulation_data, request, "gpt-4-turbo-preview")
+
+    async def _generate_with_gemini(self, system_prompt: str, user_prompt: str, request: SimulationRequest) -> Dict[str, Any]:
+        """Generate simulation using Gemini"""
+        full_prompt = f"{system_prompt}\n\n{user_prompt}"
+        response = await self.gemini_client.generate_content_async(full_prompt)
+        
+        # Clean up Gemini's response format if necessary
+        json_content = response.text.strip()
+        if json_content.startswith("```json"):
+            json_content = json_content[7:-4].strip()
+        
+        simulation_data = json.loads(json_content)
+        return self._add_metadata(simulation_data, request, "gemini-pro")
+
+    def _add_metadata(self, simulation_data: Dict[str, Any], request: SimulationRequest, model_name: str) -> Dict[str, Any]:
+        """Add metadata to the simulation data"""
+        simulation_data.update({
+            "simulation_id": str(uuid.uuid4()),
+            "description": request.prompt,
+            "complexity": request.complexity.value,
+            "metadata": {
+                "generated_at": datetime.now().isoformat(),
+                "processing_time": 2.5,  # Mock for now
+                "llm_model": model_name,
+                "confidence": 0.85
+            }
+        })
+        return simulation_data
+
     def _get_system_prompt(self, complexity: str) -> str:
         """Get system prompt based on complexity level"""
         
@@ -193,7 +224,7 @@ class LLMService:
                 }
             },
             "metadata": {
-                "generated_at": datetime.now(),
+                "generated_at": datetime.now().isoformat(),
                 "processing_time": 1.0,
                 "llm_model": "fallback",
                 "confidence": 0.5
